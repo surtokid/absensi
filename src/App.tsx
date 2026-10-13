@@ -38,6 +38,7 @@ interface Karyawan {
   shifts?: string[];
   sisa_libur?: number;
   sisa_cuti?: number;
+  foto_profil?: string | null;
   password?: string;
 }
 
@@ -253,8 +254,20 @@ export default function App() {
   const [cachedLokasi, setCachedLokasi] = useState<Lokasi[]>([]);
   const [selectedOfficeId, setSelectedOfficeId] = useState<string>('');
   const [selectedShiftName, setSelectedShiftName] = useState<string>('');
-  const [statusKeluar, setStatusKeluar] = useState<'PULANG' | 'IZIN' | 'SAKIT' | 'LIBUR' | 'CUTI'>('PULANG');
+  const [statusKeluar, setStatusKeluar] = useState<'Pulang' | 'Izin Pulang cepat' | 'Sakit' | string>('Pulang');
   const [presensiKeterangan, setPresensiKeterangan] = useState('');
+
+  // Modal Foto Profil
+  const [modalProfilePhotoOpen, setModalProfilePhotoOpen] = useState(false);
+  const [profilePhotoUploading, setProfilePhotoUploading] = useState(false);
+  const profileFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Modal Presensi Kemarin Belum Dicatat
+  const [modalYesterdayOpen, setModalYesterdayOpen] = useState(false);
+  const [yesterdayDateStr, setYesterdayDateStr] = useState('');
+  const [yesterdaySelectedStatus, setYesterdaySelectedStatus] = useState<'SAKIT' | 'LIBUR' | 'IZIN' | 'CUTI'>('SAKIT');
+  const [yesterdayKeterangan, setYesterdayKeterangan] = useState('');
+  const [yesterdaySubmitting, setYesterdaySubmitting] = useState(false);
   const [userGps, setUserGps] = useState<{ lat: number; lng: number } | null>(null);
   const [gpsStatusText, setGpsStatusText] = useState('Mendeteksi GPS...');
   const [gpsBadgeClass, setGpsBadgeClass] = useState('text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600');
@@ -497,7 +510,7 @@ export default function App() {
   };
 
   const parseAddressData = (rawAlamat?: string | null) => {
-    if (!rawAlamat) return { jalan: '', provId: '', provName: '', kotaId: '', kotaName: '', kecId: '', kecName: '', desaId: '', desaName: '', fullAddress: '' };
+    if (!rawAlamat) return { jalan: '', provId: '', provName: '', kotaId: '', kotaName: '', kecId: '', kecName: '', desaId: '', desaName: '', fullAddress: '', foto_profil: '' };
     const trimmed = String(rawAlamat).trim();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
       try {
@@ -512,7 +525,8 @@ export default function App() {
           kecName: obj.kecName || '',
           desaId: obj.desaId || '',
           desaName: obj.desaName || '',
-          fullAddress: obj.fullAddress || ''
+          fullAddress: obj.fullAddress || '',
+          foto_profil: obj.foto_profil || ''
         };
       } catch {}
     }
@@ -526,7 +540,8 @@ export default function App() {
       kecName: '',
       desaId: '',
       desaName: '',
-      fullAddress: trimmed
+      fullAddress: trimmed,
+      foto_profil: ''
     };
   };
 
@@ -794,12 +809,19 @@ export default function App() {
     if (!currentUser) return;
     const { data: refreshedUser } = await supabaseClient
       .from('karyawan_presensi')
-      .select('sisa_libur, sisa_cuti')
+      .select('sisa_libur, sisa_cuti, alamat')
       .eq('id', currentUser.id)
       .single();
 
     if (refreshedUser) {
-      setCurrentUser(prev => prev ? { ...prev, sisa_libur: refreshedUser.sisa_libur, sisa_cuti: refreshedUser.sisa_cuti } : null);
+      const addr = parseAddressData(refreshedUser.alamat);
+      setCurrentUser(prev => prev ? {
+        ...prev,
+        sisa_libur: refreshedUser.sisa_libur,
+        sisa_cuti: refreshedUser.sisa_cuti,
+        alamat: refreshedUser.alamat || prev.alamat,
+        foto_profil: addr.foto_profil || prev.foto_profil
+      } : null);
     }
 
     const period = getActivePeriod();
@@ -820,6 +842,26 @@ export default function App() {
     const today = getLocalISODate();
     const todayRecs = records.filter(r => r.tanggal === today);
     setTodayAttendanceRecords(todayRecs);
+
+    // Periksa apakah kemarin belum melakukan presensi masuk
+    const yDate = new Date();
+    yDate.setDate(yDate.getDate() - 1);
+    yDate.setMinutes(yDate.getMinutes() - yDate.getTimezoneOffset());
+    const yesterdayIso = yDate.toISOString().split('T')[0];
+
+    const yesterdayRecs = records.filter(r => r.tanggal === yesterdayIso);
+    const hasYesterdayAtt = yesterdayRecs.some(r =>
+      r.tipe === 'masuk' ||
+      ['HADIR', 'TERLAMBAT', 'LIBUR', 'CUTI', 'SAKIT', 'IZIN', 'PULANG'].includes((r.status || '').toUpperCase())
+    );
+
+    const yesterdayPromptKey = `suryatokoku_yesterday_notified_${currentUser.id}_${yesterdayIso}`;
+    if (!hasYesterdayAtt && !sessionStorage.getItem(yesterdayPromptKey)) {
+      setYesterdayDateStr(yesterdayIso);
+      setYesterdaySelectedStatus('SAKIT');
+      setYesterdayKeterangan('');
+      setModalYesterdayOpen(true);
+    }
 
     // Update shift badge
     const masukRecord = todayRecs.find(r => r.tipe === 'masuk');
@@ -1802,6 +1844,165 @@ export default function App() {
     setModalIzinOpen(true);
   };
 
+  // Foto Profil Karyawan Handlers
+  const handleProfilePhotoFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser) return;
+
+    if (!file.type.startsWith('image/')) {
+      showToast('Harap pilih file gambar (JPG/PNG/WebP).', 'error');
+      return;
+    }
+
+    setProfilePhotoUploading(true);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64Data = reader.result as string;
+        try {
+          const fileName = `Profil_${currentUser.username}_${Date.now()}.jpg`;
+          const driveUrl = await uploadPhotoToGoogleDrive(base64Data, fileName);
+          const finalPhoto = driveUrl || base64Data;
+
+          const updatedUser: Karyawan = { ...currentUser, foto_profil: finalPhoto };
+          setCurrentUser(updatedUser);
+          localStorage.setItem('presensi_user', JSON.stringify(updatedUser));
+
+          try {
+            await supabaseClient.from('karyawan_presensi').update({ foto_profil: finalPhoto }).eq('id', currentUser.id);
+          } catch (dbErr) {
+            console.warn('Simpan foto_profil ke Supabase:', dbErr);
+          }
+
+          showToast('Foto profil berhasil diunggah & tersimpan di Google Drive!', 'success');
+          setModalProfilePhotoOpen(false);
+        } catch (uploadErr: any) {
+          showToast('Gagal mengunggah foto profil: ' + (uploadErr.message || 'Error'), 'error');
+        } finally {
+          setProfilePhotoUploading(false);
+        }
+      };
+      reader.onerror = () => {
+        showToast('Gagal membaca file gambar.', 'error');
+        setProfilePhotoUploading(false);
+      };
+      reader.readAsDataURL(file);
+    } catch {
+      setProfilePhotoUploading(false);
+    }
+  };
+
+  const handleDeleteProfilePhoto = async () => {
+    if (!currentUser) return;
+    setProfilePhotoUploading(true);
+    try {
+      const updatedUser: Karyawan = { ...currentUser, foto_profil: null };
+      setCurrentUser(updatedUser);
+      localStorage.setItem('presensi_user', JSON.stringify(updatedUser));
+
+      try {
+        await supabaseClient.from('karyawan_presensi').update({ foto_profil: null }).eq('id', currentUser.id);
+      } catch (dbErr) {
+        console.warn('Hapus foto_profil di database:', dbErr);
+      }
+
+      showToast('Foto profil berhasil dihapus.', 'info');
+      setModalProfilePhotoOpen(false);
+    } catch {
+      showToast('Gagal menghapus foto profil.', 'error');
+    } finally {
+      setProfilePhotoUploading(false);
+    }
+  };
+
+  // Submit status presensi kemarin yang belum tercatat
+  const handleSubmitYesterdayAttendance = async () => {
+    if (!currentUser || !yesterdayDateStr) return;
+    setYesterdaySubmitting(true);
+    try {
+      const statusUpper = yesterdaySelectedStatus;
+      const ket = yesterdayKeterangan.trim() || `Presensi kemarin: ${statusUpper}`;
+
+      if (statusUpper === 'LIBUR') {
+        if ((currentUser.sisa_libur ?? 0) <= 0) {
+          showToast('Jatah libur Anda sudah habis. Silakan pilih status Izin.', 'error');
+          setYesterdaySubmitting(false);
+          return;
+        }
+      }
+
+      if (statusUpper === 'CUTI') {
+        const userDivisi = (currentUser.divisi || '').trim().toLowerCase();
+        const isLocked = !['teknisi', 'it', 'support', 'management'].some(d => userDivisi.includes(d));
+        if (isLocked) {
+          showToast('Akses cuti untuk divisi kamu masih terkunci. Silakan pilih opsi lain.', 'error');
+          setYesterdaySubmitting(false);
+          return;
+        }
+        if ((currentUser.sisa_cuti ?? 0) <= 0) {
+          showToast('Jatah cuti Anda sudah habis.', 'error');
+          setYesterdaySubmitting(false);
+          return;
+        }
+      }
+
+      const { error: insErr } = await supabaseClient.from('presensi_presensi').insert([{
+        karyawan_id: currentUser.id,
+        karyawan_nama: currentUser.nama_lengkap,
+        divisi: currentUser.divisi,
+        tipe: statusUpper === 'LIBUR' ? 'libur' : statusUpper === 'CUTI' ? 'cuti' : 'masuk',
+        status: statusUpper,
+        shift_nama: '-',
+        lokasi_id: null,
+        lokasi_nama: '-',
+        latitude: null,
+        longitude: null,
+        foto_url: null,
+        keterangan: ket,
+        tanggal: yesterdayDateStr,
+        created_at: `${yesterdayDateStr}T17:00:00.000Z`
+      }]);
+
+      if (insErr) throw insErr;
+
+      if (statusUpper === 'LIBUR') {
+        const newSisa = Math.max(0, (currentUser.sisa_libur ?? 1) - 1);
+        await supabaseClient.from('karyawan_presensi').update({ sisa_libur: newSisa }).eq('id', currentUser.id);
+        setCurrentUser(prev => prev ? { ...prev, sisa_libur: newSisa } : null);
+        const stored = localStorage.getItem('presensi_user');
+        if (stored) {
+          try {
+            const u = JSON.parse(stored);
+            u.sisa_libur = newSisa;
+            localStorage.setItem('presensi_user', JSON.stringify(u));
+          } catch {}
+        }
+      } else if (statusUpper === 'CUTI') {
+        const newSisaCuti = Math.max(0, (currentUser.sisa_cuti ?? 1) - 1);
+        await supabaseClient.from('karyawan_presensi').update({ sisa_cuti: newSisaCuti }).eq('id', currentUser.id);
+        setCurrentUser(prev => prev ? { ...prev, sisa_cuti: newSisaCuti } : null);
+        const stored = localStorage.getItem('presensi_user');
+        if (stored) {
+          try {
+            const u = JSON.parse(stored);
+            u.sisa_cuti = newSisaCuti;
+            localStorage.setItem('presensi_user', JSON.stringify(u));
+          } catch {}
+        }
+      }
+
+      sessionStorage.setItem(`suryatokoku_yesterday_notified_${currentUser.id}_${yesterdayDateStr}`, '1');
+      setModalYesterdayOpen(false);
+      showToast(`Presensi kemarin berhasil dicatat sebagai ${statusUpper}!`, 'success');
+      refreshUserDashboard();
+      loadEmployeeDailyStatus();
+    } catch (err: any) {
+      showToast('Gagal mencatat presensi kemarin: ' + (err.message || 'Error'), 'error');
+    } finally {
+      setYesterdaySubmitting(false);
+    }
+  };
+
   // Photo viewer modal
   const openPhotoPreviewModal = (url: string, rawNama: string, rawSubtitle: string) => {
     setPreviewPhotoUrl(formatDirectImageUrl(url));
@@ -2084,11 +2285,16 @@ export default function App() {
       <header className="bg-white/85 backdrop-blur-md sticky top-0 z-40 border-b border-slate-200/70 shadow-2xs transition-all">
         <div className={`${currentView === 'dashboard' ? 'w-full px-4 sm:px-6 lg:px-8' : 'max-w-7xl mx-auto px-4 sm:px-6'} py-2.5 flex items-center justify-between`}>
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-slate-900 text-white flex items-center justify-center shadow-sm">
-              <i className="fa-solid fa-fingerprint text-base text-indigo-400"></i>
+            <div className="w-9 h-9 rounded-xl bg-white flex items-center justify-center shadow-xs overflow-hidden border border-slate-200/80">
+              <img
+                src="/logo-surtok.png"
+                alt="Logo Suryatokoku"
+                className="w-full h-full object-contain p-0.5"
+                onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/Logo Surtok.png'; }}
+              />
             </div>
             <div>
-              <h1 className="text-base sm:text-lg font-bold tracking-tight text-slate-950 leading-none">Presensi</h1>
+              <h1 className="text-base sm:text-lg font-bold tracking-tight text-slate-950 leading-none">Suryatokoku</h1>
               <span className="text-[11px] font-medium text-indigo-600 tracking-wide">
                 {currentView === 'dashboard' ? 'Dashboard Admin (PC Desktop)' : (currentView === 'status-karyawan' ? 'Status Karyawan' : 'Portal Karyawan')}
               </span>
@@ -2144,10 +2350,15 @@ export default function App() {
               /* Karyawan Login Form - Modern Linear/iOS Style */
               <div className="bg-white p-7 rounded-3xl shadow-sm border border-slate-100 my-auto space-y-6">
                 <div className="text-center">
-                  <div className="w-14 h-14 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3.5 border border-indigo-100/60 shadow-2xs">
-                    <i className="fa-solid fa-fingerprint text-2xl"></i>
+                  <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center mx-auto mb-3.5 border border-slate-200/80 shadow-xs p-1 overflow-hidden">
+                    <img
+                      src="/logo-surtok.png"
+                      alt="Logo Suryatokoku"
+                      className="w-full h-full object-contain"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/Logo Surtok.png'; }}
+                    />
                   </div>
-                  <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Selamat Datang</h2>
+                  <h2 className="text-2xl font-bold text-slate-900 tracking-tight">Suryatokoku</h2>
                   <p className="text-xs text-slate-500 mt-1 font-medium">Masuk untuk mencatat presensi & tugas harian</p>
                 </div>
 
@@ -2216,9 +2427,30 @@ export default function App() {
                   <div className="relative z-10">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-3">
-                        <div className="w-12 h-12 rounded-2xl bg-white/10 backdrop-blur-md flex items-center justify-center border border-white/15 text-lg font-bold text-white shadow-2xs">
-                          <span>{currentUser.nama_lengkap.charAt(0).toUpperCase()}</span>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setModalProfilePhotoOpen(true)}
+                          className="relative group w-12 h-12 rounded-2xl overflow-hidden border border-white/20 bg-white/10 backdrop-blur-md flex items-center justify-center text-white shadow-2xs cursor-pointer active:scale-95 transition-all shrink-0"
+                          title="Foto Profil Karyawan (Klik untuk upload / ganti / hapus)"
+                        >
+                          {currentUser.foto_profil ? (
+                            <img
+                              src={currentUser.foto_profil}
+                              alt={currentUser.nama_lengkap}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center bg-indigo-500/20 text-indigo-100 font-bold text-lg">
+                              <span>{currentUser.nama_lengkap.charAt(0).toUpperCase()}</span>
+                            </div>
+                          )}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-white">
+                            <i className="fa-solid fa-camera text-xs"></i>
+                          </div>
+                          <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 rounded-full bg-indigo-600 text-white flex items-center justify-center text-[8px] border border-slate-900 shadow-xs pointer-events-none">
+                            <i className="fa-solid fa-camera"></i>
+                          </div>
+                        </button>
                         <div>
                           <h3 className="font-bold text-base leading-tight text-white tracking-tight">{currentUser.nama_lengkap}</h3>
                           <div className="flex items-center gap-2 mt-0.5">
@@ -2355,13 +2587,13 @@ export default function App() {
 
                 {/* Tombol Presensi Utama (Masuk & Keluar) - Tactile iOS Ergonomic Cards */}
                 <div className="grid grid-cols-2 gap-3">
-                  {/* Absen Masuk */}
+                  {/* Masuk */}
                   {hasLiburToday || hasIzinToday ? (
                     <div className="p-4 bg-slate-100/90 text-slate-400 rounded-3xl border border-slate-200/60 flex flex-col items-center justify-center gap-2 select-none min-h-[114px]">
                       <div className="w-11 h-11 rounded-2xl bg-slate-200/80 text-slate-400 flex items-center justify-center text-lg">
                         <i className="fa-solid fa-arrow-right-to-bracket"></i>
                       </div>
-                      <span className="font-semibold text-xs text-slate-500">Absen Masuk</span>
+                      <span className="font-semibold text-xs text-slate-500">Masuk</span>
                       <span className="text-[11px] text-slate-400 font-medium">{hasLiburToday ? 'Libur' : 'Izin'}</span>
                     </div>
                   ) : masukRecordToday ? (
@@ -2383,19 +2615,19 @@ export default function App() {
                         <i className="fa-solid fa-arrow-right-to-bracket"></i>
                       </div>
                       <div className="text-center">
-                        <span className="font-bold text-sm block leading-tight">Absen Masuk</span>
+                        <span className="font-bold text-sm block leading-tight">Masuk</span>
                         <span className="text-[10px] text-emerald-100 font-medium">Klik untuk check-in</span>
                       </div>
                     </button>
                   )}
 
-                  {/* Absen Keluar */}
+                  {/* Keluar */}
                   {hasLiburToday || hasIzinToday ? (
                     <div className="p-4 bg-slate-100/90 text-slate-400 rounded-3xl border border-slate-200/60 flex flex-col items-center justify-center gap-2 select-none min-h-[114px]">
                       <div className="w-11 h-11 rounded-2xl bg-slate-200/80 text-slate-400 flex items-center justify-center text-lg">
                         <i className="fa-solid fa-arrow-right-from-bracket"></i>
                       </div>
-                      <span className="font-semibold text-xs text-slate-500">Absen Keluar</span>
+                      <span className="font-semibold text-xs text-slate-500">Keluar</span>
                       <span className="text-[11px] text-slate-400 font-medium">{hasLiburToday ? 'Libur' : 'Izin'}</span>
                     </div>
                   ) : keluarRecordToday ? (
@@ -2417,7 +2649,7 @@ export default function App() {
                         <i className="fa-solid fa-arrow-right-from-bracket"></i>
                       </div>
                       <div className="text-center">
-                        <span className="font-bold text-sm block leading-tight">Absen Keluar</span>
+                        <span className="font-bold text-sm block leading-tight">Keluar</span>
                         <span className="text-[10px] text-rose-100 font-medium">Klik untuk check-out</span>
                       </div>
                     </button>
@@ -2725,10 +2957,15 @@ export default function App() {
               /* Admin Login Form */
               <div className="max-w-md w-full mx-auto bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-slate-100 my-auto">
                 <div className="text-center mb-6">
-                  <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3 shadow-inner">
-                    <i className="fa-solid fa-shield-halved text-2xl"></i>
+                  <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center mx-auto mb-3 border border-slate-200/80 shadow-xs p-1.5 overflow-hidden">
+                    <img
+                      src="/logo-surtok.png"
+                      alt="Logo Suryatokoku"
+                      className="w-full h-full object-contain"
+                      onError={(e) => { (e.currentTarget as HTMLImageElement).src = '/Logo Surtok.png'; }}
+                    />
                   </div>
-                  <h2 className="text-2xl font-extrabold text-slate-900">Admin Dashboard</h2>
+                  <h2 className="text-2xl font-extrabold text-slate-900">Suryatokoku Admin</h2>
                   <p className="text-xs text-slate-500 mt-1">Masuk untuk mengelola data master dan presensi</p>
                 </div>
 
@@ -4377,7 +4614,7 @@ export default function App() {
                       <span>Status Kepulangan / Selesai Tugas</span>
                     </div>
                     <p className="text-[11px] text-rose-700/80 leading-relaxed">
-                      Pilih alasan kepulangan Anda: PULANG, IZIN, atau SAKIT.
+                      Pilih alasan kepulangan: Pulang, Izin Pulang cepat, atau Sakit.
                     </p>
                   </div>
 
@@ -4388,15 +4625,13 @@ export default function App() {
                       onChange={e => setStatusKeluar(e.target.value as any)}
                       className="w-full px-3.5 py-3 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 shadow-2xs"
                     >
-                      <option value="PULANG">PULANG (Selesai Jam Kerja)</option>
-                      <option value="IZIN">IZIN (Meninggalkan Kantor / Urusan Luar)</option>
-                      <option value="SAKIT">SAKIT (Izin Pulang Karena Sakit)</option>
-                      <option value="LIBUR">LIBUR (Jadwal Libur)</option>
-                      <option value="CUTI">CUTI (Pengajuan Cuti)</option>
+                      <option value="Pulang">Pulang</option>
+                      <option value="Izin Pulang cepat">Izin Pulang cepat</option>
+                      <option value="Sakit">Sakit</option>
                     </select>
                   </div>
 
-                  {statusKeluar !== 'PULANG' && (
+                  {statusKeluar !== 'Pulang' && (
                     <div>
                       <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5">
                         Keterangan / Alasan Lengkap <span className="text-rose-500">*</span>
@@ -4419,7 +4654,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => {
-                        if ((statusKeluar === 'IZIN' || statusKeluar === 'SAKIT') && !presensiKeterangan.trim()) {
+                        if (statusKeluar !== 'Pulang' && !presensiKeterangan.trim()) {
                           showToast(`Harap tuliskan keterangan / alasan untuk status ${statusKeluar}`, 'error');
                           return;
                         }
@@ -4832,7 +5067,277 @@ export default function App() {
         </div>
       )}
 
+      {/* MODAL FOTO PROFIL KARYAWAN */}
+      {modalProfilePhotoOpen && currentUser && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white max-w-sm w-full rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-5 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-sm shadow-inner">
+                  <i className="fa-solid fa-camera"></i>
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm text-slate-900">Foto Profil Karyawan</h3>
+                  <p className="text-[11px] text-slate-500">{currentUser.nama_lengkap}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalProfilePhotoOpen(false)}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-all cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark text-xs"></i>
+              </button>
+            </div>
 
+            {/* Hidden file input */}
+            <input
+              type="file"
+              ref={profileFileInputRef}
+              accept="image/*"
+              onChange={handleProfilePhotoFileChange}
+              className="hidden"
+            />
+
+            <div className="flex flex-col items-center justify-center py-2 space-y-4">
+              <div className="relative group w-32 h-32 rounded-3xl overflow-hidden border-2 border-indigo-100 shadow-md bg-slate-100 flex items-center justify-center">
+                {currentUser.foto_profil ? (
+                  <img
+                    src={currentUser.foto_profil}
+                    alt={currentUser.nama_lengkap}
+                    className="w-full h-full object-cover"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center text-slate-400 gap-1">
+                    <i className="fa-regular fa-user text-4xl"></i>
+                    <span className="text-[10px] font-medium text-slate-400">Belum Ada Foto</span>
+                  </div>
+                )}
+                {profilePhotoUploading && (
+                  <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center text-white gap-2">
+                    <i className="fa-solid fa-circle-notch fa-spin text-2xl"></i>
+                    <span className="text-[11px] font-semibold">Mengunggah ke Drive...</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[11px] font-semibold border border-emerald-100">
+                <i className="fa-brands fa-google-drive text-emerald-600"></i>
+                <span>Tersinkron ke Google Drive</span>
+              </div>
+            </div>
+
+            <div className="space-y-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                disabled={profilePhotoUploading}
+                onClick={() => profileFileInputRef.current?.click()}
+                className="w-full py-3 px-4 rounded-2xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <i className="fa-solid fa-upload text-xs"></i>
+                <span>{currentUser.foto_profil ? 'Ganti Foto Profil' : 'Upload Foto Profil'}</span>
+              </button>
+
+              {currentUser.foto_profil && (
+                <button
+                  type="button"
+                  disabled={profilePhotoUploading}
+                  onClick={handleDeleteProfilePhoto}
+                  className="w-full py-2.5 px-4 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-100 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  <i className="fa-solid fa-trash-can text-xs"></i>
+                  <span>Hapus Foto Profil</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setModalProfilePhotoOpen(false)}
+                className="w-full py-2 text-xs font-medium text-slate-500 hover:text-slate-800 transition-all text-center cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL PEMBERITAHUAN PRESENSI KEMARIN BELUM DICATAT */}
+      {modalYesterdayOpen && currentUser && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white max-w-md w-full rounded-3xl p-5 sm:p-6 shadow-2xl border border-slate-100 space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-lg border border-amber-200/60 shadow-inner">
+                  <i className="fa-solid fa-bell"></i>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold tracking-wider text-amber-600 uppercase bg-amber-50 px-2 py-0.5 rounded-full border border-amber-100">
+                    Pengumuman Presensi
+                  </span>
+                  <h3 className="font-extrabold text-base text-slate-900 mt-1">Kemarin Belum Presensi</h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  sessionStorage.setItem(`suryatokoku_yesterday_notified_${currentUser.id}_${yesterdayDateStr}`, '1');
+                  setModalYesterdayOpen(false);
+                }}
+                className="w-8 h-8 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-500 flex items-center justify-center transition-all cursor-pointer"
+              >
+                <i className="fa-solid fa-xmark text-xs"></i>
+              </button>
+            </div>
+
+            {/* Announcement Message */}
+            <div className="p-3.5 bg-amber-50/70 rounded-2xl border border-amber-200/70 text-xs text-amber-900 leading-relaxed">
+              Halo <strong>{currentUser.nama_lengkap}</strong>, sistem mendeteksi kamu kemarin tanggal <strong>{formatIndoDate(yesterdayDateStr)}</strong> belum melakukan presensi masuk. Silakan pilih status kehadiran kemarin:
+            </div>
+
+            {/* Status Options */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-2">Pilih Status Kemarin</label>
+              <div className="grid grid-cols-3 gap-2.5">
+                {/* 1. SAKIT */}
+                <button
+                  type="button"
+                  onClick={() => setYesterdaySelectedStatus('SAKIT')}
+                  className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    yesterdaySelectedStatus === 'SAKIT'
+                      ? 'bg-amber-500 text-white border-amber-500 shadow-sm shadow-amber-500/25 ring-2 ring-amber-400'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                    yesterdaySelectedStatus === 'SAKIT' ? 'bg-white/20 text-white' : 'bg-amber-50 text-amber-600'
+                  }`}>
+                    <i className="fa-solid fa-briefcase-medical"></i>
+                  </div>
+                  <span className="text-xs font-bold">Sakit</span>
+                </button>
+
+                {/* 2. LIBUR atau IZIN (sesuai jatah libur) */}
+                {(currentUser.sisa_libur ?? 0) > 0 ? (
+                  <button
+                    type="button"
+                    onClick={() => setYesterdaySelectedStatus('LIBUR')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      yesterdaySelectedStatus === 'LIBUR'
+                        ? 'bg-sky-500 text-white border-sky-500 shadow-sm shadow-sky-500/25 ring-2 ring-sky-400'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                      yesterdaySelectedStatus === 'LIBUR' ? 'bg-white/20 text-white' : 'bg-sky-50 text-sky-600'
+                    }`}>
+                      <i className="fa-solid fa-umbrella-beach"></i>
+                    </div>
+                    <span className="text-xs font-bold">Libur</span>
+                    <span className={`text-[10px] font-semibold ${
+                      yesterdaySelectedStatus === 'LIBUR' ? 'text-sky-100' : 'text-sky-600'
+                    }`}>
+                      Sisa {currentUser.sisa_libur}
+                    </span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setYesterdaySelectedStatus('IZIN')}
+                    className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      yesterdaySelectedStatus === 'IZIN'
+                        ? 'bg-orange-500 text-white border-orange-500 shadow-sm shadow-orange-500/25 ring-2 ring-orange-400'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                      yesterdaySelectedStatus === 'IZIN' ? 'bg-white/20 text-white' : 'bg-orange-50 text-orange-600'
+                    }`}>
+                      <i className="fa-solid fa-envelope-open-text"></i>
+                    </div>
+                    <span className="text-xs font-bold">Izin</span>
+                    <span className={`text-[9px] font-semibold ${
+                      yesterdaySelectedStatus === 'IZIN' ? 'text-orange-100' : 'text-slate-400'
+                    }`}>
+                      Libur Habis
+                    </span>
+                  </button>
+                )}
+
+                {/* 3. CUTI */}
+                <button
+                  type="button"
+                  onClick={() => setYesterdaySelectedStatus('CUTI')}
+                  className={`p-3 rounded-2xl border flex flex-col items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                    yesterdaySelectedStatus === 'CUTI'
+                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm shadow-indigo-600/25 ring-2 ring-indigo-400'
+                      : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                    yesterdaySelectedStatus === 'CUTI' ? 'bg-white/20 text-white' : 'bg-indigo-50 text-indigo-600'
+                  }`}>
+                    <i className="fa-solid fa-calendar-check"></i>
+                  </div>
+                  <span className="text-xs font-bold">Cuti</span>
+                  <span className={`text-[10px] font-semibold ${
+                    yesterdaySelectedStatus === 'CUTI' ? 'text-indigo-100' : 'text-slate-400'
+                  }`}>
+                    Sisa {currentUser.sisa_cuti ?? 0}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Keterangan */}
+            <div>
+              <label className="block text-xs font-bold text-slate-700 uppercase mb-1.5">
+                Keterangan / Alasan
+              </label>
+              <textarea
+                value={yesterdayKeterangan}
+                onChange={e => setYesterdayKeterangan(e.target.value)}
+                rows={2}
+                placeholder="Tuliskan alasan atau keterangan kemarin..."
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs font-medium focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              ></textarea>
+            </div>
+
+            {/* Actions */}
+            <div className="pt-2 flex items-center gap-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => {
+                  sessionStorage.setItem(`suryatokoku_yesterday_notified_${currentUser.id}_${yesterdayDateStr}`, '1');
+                  setModalYesterdayOpen(false);
+                }}
+                className="w-1/3 py-3 rounded-2xl text-xs font-semibold text-slate-600 hover:bg-slate-100 transition-all cursor-pointer"
+              >
+                Nanti
+              </button>
+              <button
+                type="button"
+                disabled={yesterdaySubmitting}
+                onClick={handleSubmitYesterdayAttendance}
+                className="w-2/3 py-3 rounded-2xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-600/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-60"
+              >
+                {yesterdaySubmitting ? (
+                  <>
+                    <i className="fa-solid fa-circle-notch fa-spin text-xs"></i>
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <i className="fa-solid fa-check text-xs"></i>
+                    <span>Kirim Presensi Kemarin</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 7: PHOTO PREVIEW */}
       {photoPreviewModalOpen && (

@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "Presensi Karyawan",
-  "short_name": "Presensi",
-  "description": "Aplikasi Presensi Karyawan real-time dengan GPS geofence, foto selfie, manajemen shift, dan dashboard admin.",
+  "name": "Suryatokoku",
+  "short_name": "Suryatokoku",
+  "description": "Aplikasi Suryatokoku real-time dengan GPS geofence, foto selfie, manajemen shift, dan dashboard admin.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

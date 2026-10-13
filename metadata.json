@@ -1,5 +1,5 @@
 {
-  "name": "Presensi Karyawan",
+  "name": "Suryatokoku",
   "description": "Aplikasi Presensi Karyawan real-time dengan GPS geofence, foto selfie, manajemen shift, pengajuan lembur, libur, sakit, cuti, serta dashboard admin lengkap.",
   "requestFramePermissions": [
     "camera",
