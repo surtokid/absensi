@@ -166,7 +166,10 @@ export default function App() {
 
   // Admin state
   const [activeAdminTab, setActiveAdminTab] = useState<'rekap' | 'karyawan' | 'lokasi' | 'shift' | 'divisi' | 'lembur' | 'jatah' | 'pengumuman' | 'useradmin'>('rekap');
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [isSidebarPinned, setIsSidebarPinned] = useState(false);
+  const [isSidebarHovered, setIsSidebarHovered] = useState(false);
+  const [mobileAdminMenuOpen, setMobileAdminMenuOpen] = useState(false);
+  const isSidebarExpanded = isSidebarPinned || isSidebarHovered;
   const [filterRekapTanggal, setFilterRekapTanggal] = useState('');
   const [rekapList, setRekapList] = useState<GroupedRekap[]>([]);
   const [rekapStats, setRekapStats] = useState({ masuk: 0, belum_masuk: 0, sakit: 0, libur: 0, cuti: 0 });
@@ -735,9 +738,9 @@ export default function App() {
         setCurrentAdmin(JSON.parse(a));
       } catch {}
     }
-    const col = localStorage.getItem('presensi_admin_sidebar_collapsed');
-    if (col === 'true') {
-      setIsSidebarCollapsed(true);
+    const pinned = localStorage.getItem('presensi_admin_sidebar_pinned');
+    if (pinned === 'true') {
+      setIsSidebarPinned(true);
     }
     setFilterRekapTanggal(getLocalISODate());
   }, [getLocalISODate]);
@@ -1605,7 +1608,7 @@ export default function App() {
       if (error) throw error;
 
       if (izinType === 'CUTI') {
-        const curCuti = currentUser.sisa_cuti ?? 12;
+        const curCuti = currentUser.sisa_cuti ?? 0;
         const newCuti = Math.max(0, curCuti - 1);
         await supabaseClient.from('karyawan_presensi').update({ sisa_cuti: newCuti }).eq('id', currentUser.id);
         setCurrentUser(prev => prev ? { ...prev, sisa_cuti: newCuti } : null);
@@ -1966,7 +1969,7 @@ export default function App() {
     <div className="bg-slate-100 text-slate-800 antialiased min-h-screen flex flex-col font-sans">
       {/* Header Bar */}
       <header className="bg-white/80 backdrop-blur-md sticky top-0 z-40 border-b border-slate-200 shadow-sm transition-all">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between">
+        <div className={`${currentView === 'dashboard' ? 'w-full px-4 sm:px-6 lg:px-8' : 'max-w-7xl mx-auto px-4 sm:px-6'} py-2.5 flex items-center justify-between`}>
           <div className="flex items-center gap-2.5">
             <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-indigo-500 text-white flex items-center justify-center shadow-md shadow-brand-500/20">
               <i className="fa-solid fa-camera text-base"></i>
@@ -1974,7 +1977,7 @@ export default function App() {
             <div>
               <h1 className="text-lg font-extrabold tracking-tight text-slate-900 leading-none">Presensi</h1>
               <span className="text-[11px] font-semibold text-brand-600 tracking-wide uppercase">
-                {currentView === 'dashboard' ? 'Dashboard Admin' : (currentView === 'status-karyawan' ? 'Status Karyawan' : 'Mode Karyawan')}
+                {currentView === 'dashboard' ? 'Dashboard Admin (PC Desktop)' : (currentView === 'status-karyawan' ? 'Status Karyawan' : 'Mode Karyawan')}
               </span>
             </div>
           </div>
@@ -1987,7 +1990,7 @@ export default function App() {
                 currentView === 'karyawan' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <i className="fa-solid fa-mobile-screen"></i> Karyawan
+              <i className="fa-solid fa-mobile-screen"></i> <span className="hidden sm:inline">Mode</span> Karyawan
             </button>
             <button
               onClick={() => navigateTo('#dashboard')}
@@ -1997,6 +2000,24 @@ export default function App() {
             >
               <i className="fa-solid fa-gauge-high"></i> Dashboard
             </button>
+
+            {currentView === 'dashboard' && currentAdmin && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (!document.fullscreenElement) {
+                    document.documentElement.requestFullscreen().catch(() => {});
+                  } else {
+                    document.exitFullscreen().catch(() => {});
+                  }
+                }}
+                className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-white/80 hover:bg-white text-slate-700 hover:text-brand-600 border border-slate-200/80 transition-all cursor-pointer text-xs font-bold ml-1 shadow-2xs"
+                title="Toggle Mode Full Screen (Layar Penuh PC)"
+              >
+                <i className="fa-solid fa-expand text-brand-600 text-xs"></i>
+                <span>Layar Penuh</span>
+              </button>
+            )}
           </div>
         </div>
       </header>
@@ -2146,7 +2167,7 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-[10px] text-indigo-200 uppercase font-semibold">Sisa Cuti</div>
-                        <div className="text-sm font-extrabold">{currentUser.sisa_cuti ?? 12} Hari</div>
+                        <div className="text-sm font-extrabold">{currentUser.sisa_cuti ?? 0} Hari</div>
                       </div>
                     </div>
                   </div>
@@ -2456,40 +2477,80 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Filter Pills */}
-              <div className="flex items-center gap-1.5 overflow-x-auto pb-1 hide-scrollbar">
-                {(
-                  [
-                    { key: 'masuk', label: 'Sudah Masuk' },
-                    { key: 'belum_masuk', label: 'Belum Masuk' },
-                    { key: 'izin', label: 'Izin' },
-                    { key: 'libur', label: 'Libur' },
-                    { key: 'cuti', label: 'Cuti' },
-                  ] as const
-                ).map(({ key, label }) => {
-                  const isActive = activeTeamFilter === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => setActiveTeamFilter(key)}
-                      className={`px-3 py-1.5 rounded-xl font-bold shrink-0 transition-all text-[11px] flex items-center gap-1.5 cursor-pointer ${
-                        isActive
-                          ? 'bg-brand-600 text-white shadow-sm'
-                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                      }`}
-                    >
-                      <span>{label}</span>
-                      <span
-                        className={`px-1.5 py-0.5 rounded-full text-[10px] font-black leading-none ${
-                          isActive ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
+              {/* Filter Buttons - Tampilan Rapi & Proporsional Tanpa Scroll Samping */}
+              <div className="space-y-1.5">
+                {/* Baris 1: Filter Kehadiran Utama (Sudah Masuk & Belum Masuk) */}
+                <div className="grid grid-cols-2 gap-2">
+                  {(
+                    [
+                      { key: 'masuk', label: 'Sudah Masuk', icon: 'fa-solid fa-circle-check', activeBg: 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25', activeBadge: 'bg-white/20 text-white', iconColor: 'text-emerald-500' },
+                      { key: 'belum_masuk', label: 'Belum Masuk', icon: 'fa-solid fa-clock', activeBg: 'bg-amber-600 text-white shadow-sm shadow-amber-500/25', activeBadge: 'bg-white/20 text-white', iconColor: 'text-amber-500' },
+                    ] as const
+                  ).map(({ key, label, icon, activeBg, activeBadge, iconColor }) => {
+                    const isActive = activeTeamFilter === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setActiveTeamFilter(key)}
+                        className={`py-2 px-2.5 rounded-2xl font-bold transition-all text-xs flex items-center justify-between gap-1.5 cursor-pointer border ${
+                          isActive
+                            ? `${activeBg} border-transparent shadow-sm`
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/80 active:scale-98'
                         }`}
                       >
-                        {teamCounters[key]}
-                      </span>
-                    </button>
-                  );
-                })}
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <i className={`${icon} ${isActive ? 'text-white' : iconColor} text-xs shrink-0`}></i>
+                          <span className="truncate text-[11px] sm:text-xs">{label}</span>
+                        </div>
+                        <span
+                          className={`px-1.5 py-0.5 rounded-full text-[10px] font-black shrink-0 ${
+                            isActive ? activeBadge : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {teamCounters[key]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Baris 2: Filter Khusus (Izin, Libur, Cuti) */}
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      { key: 'izin', label: 'Izin', icon: 'fa-solid fa-file-lines', activeBg: 'bg-sky-600 text-white shadow-sm shadow-sky-500/25', activeBadge: 'bg-white/20 text-white', iconColor: 'text-sky-500' },
+                      { key: 'libur', label: 'Libur', icon: 'fa-solid fa-mug-hot', activeBg: 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/25', activeBadge: 'bg-white/20 text-white', iconColor: 'text-indigo-500' },
+                      { key: 'cuti', label: 'Cuti', icon: 'fa-solid fa-plane-departure', activeBg: 'bg-purple-600 text-white shadow-sm shadow-purple-500/25', activeBadge: 'bg-white/20 text-white', iconColor: 'text-purple-500' },
+                    ] as const
+                  ).map(({ key, label, icon, activeBg, activeBadge, iconColor }) => {
+                    const isActive = activeTeamFilter === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setActiveTeamFilter(key)}
+                        className={`py-1.5 px-2 rounded-xl font-bold transition-all text-xs flex items-center justify-between gap-1 cursor-pointer border ${
+                          isActive
+                            ? `${activeBg} border-transparent shadow-sm`
+                            : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200/80 active:scale-98'
+                        }`}
+                      >
+                        <div className="flex items-center gap-1 min-w-0">
+                          <i className={`${icon} ${isActive ? 'text-white' : iconColor} text-[10px] shrink-0`}></i>
+                          <span className="truncate text-[10px] sm:text-[11px]">{label}</span>
+                        </div>
+                        <span
+                          className={`px-1 py-0.5 rounded-full text-[9px] font-black shrink-0 ${
+                            isActive ? activeBadge : 'bg-slate-200 text-slate-700'
+                          }`}
+                        >
+                          {teamCounters[key]}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Team list */}
@@ -2530,7 +2591,7 @@ export default function App() {
 
         {/* VIEW 3: DASHBOARD ADMIN */}
         {currentView === 'dashboard' && (
-          <section className="flex-1 w-full max-w-7xl mx-auto p-4 sm:p-6 flex flex-col gap-6">
+          <section className={`flex-1 w-full ${currentAdmin ? 'max-w-none px-2 sm:px-4 lg:px-8 py-4' : 'max-w-7xl mx-auto p-4 sm:p-6'} flex flex-col gap-4`}>
             {!currentAdmin ? (
               /* Admin Login Form */
               <div className="max-w-md w-full mx-auto bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-slate-100 my-auto">
@@ -2594,35 +2655,97 @@ export default function App() {
                 </form>
               </div>
             ) : (
-              /* Admin App Panel */
-              <div className="flex flex-col md:flex-row gap-6 w-full items-start">
-                {/* Sidebar */}
+              /* Admin App Panel (Desktop Full Screen & Auto-Hide Sidebar) */
+              <div className="flex flex-col md:flex-row gap-4 lg:gap-5 w-full items-start relative">
+                {/* Mobile Menu Trigger (< md) */}
+                <div className="md:hidden w-full flex items-center justify-between p-3.5 bg-white rounded-2xl border border-slate-200 shadow-2xs">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-xs">
+                      <i className="fa-solid fa-user-shield"></i>
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-slate-400 font-bold uppercase">Menu Aktif</div>
+                      <div className="font-extrabold text-xs text-slate-800">
+                        {
+                          activeAdminTab === 'rekap' ? 'Rekapan Presensi' :
+                          activeAdminTab === 'karyawan' ? 'Master Karyawan' :
+                          activeAdminTab === 'lokasi' ? 'Master Lokasi' :
+                          activeAdminTab === 'shift' ? 'Master Shift & Jam' :
+                          activeAdminTab === 'divisi' ? 'Master Divisi' :
+                          activeAdminTab === 'lembur' ? 'Pengajuan Lembur' :
+                          activeAdminTab === 'jatah' ? 'Jatah Libur & Cuti' :
+                          activeAdminTab === 'pengumuman' ? 'Siaran Pengumuman' : 'Master Admin'
+                        }
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMobileAdminMenuOpen(!mobileAdminMenuOpen)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 font-bold text-xs text-slate-700 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <i className={`fa-solid ${mobileAdminMenuOpen ? 'fa-xmark' : 'fa-bars'}`}></i>
+                    <span>{mobileAdminMenuOpen ? 'Tutup' : 'Pilih Menu'}</span>
+                  </button>
+                </div>
+
+                {/* Left Navigation Bar / Sidebar with Desktop Auto-Hide */}
                 <aside
                   onMouseEnter={() => {
-                    if (isSidebarCollapsed && window.innerWidth >= 768) {
-                      setIsSidebarCollapsed(false);
+                    if (window.innerWidth >= 768) {
+                      setIsSidebarHovered(true);
                     }
                   }}
                   onMouseLeave={() => {
-                    if (localStorage.getItem('presensi_admin_sidebar_collapsed') === 'true' && window.innerWidth >= 768) {
-                      setIsSidebarCollapsed(true);
+                    if (window.innerWidth >= 768) {
+                      setIsSidebarHovered(false);
                     }
                   }}
-                  className={`w-full ${
-                    isSidebarCollapsed ? 'md:w-20' : 'md:w-64'
-                  } bg-white rounded-3xl p-4 border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0 transition-all duration-300`}
+                  className={`${
+                    mobileAdminMenuOpen ? 'flex' : 'hidden md:flex'
+                  } w-full ${
+                    isSidebarExpanded ? 'md:w-64' : 'md:w-20'
+                  } bg-white rounded-3xl p-3 sm:p-4 border border-slate-200 shadow-sm flex flex-col gap-2 shrink-0 transition-all duration-300 relative group z-20`}
                 >
-                  <div className="flex items-center gap-3 p-2 mb-2 border-b border-slate-100">
-                    <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-black text-sm shrink-0">
-                      <i className="fa-solid fa-user-shield"></i>
-                    </div>
-                    {!isSidebarCollapsed && (
-                      <div className="min-w-0">
-                        <h4 className="font-extrabold text-xs text-slate-900 truncate">{currentAdmin.nama_lengkap}</h4>
-                        <span className="text-[10px] text-slate-400 font-semibold uppercase">{currentAdmin.role || 'Super Admin'}</span>
+                  <div className="flex items-center justify-between p-1.5 mb-1 border-b border-slate-100">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-10 h-10 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-black text-sm shrink-0">
+                        <i className="fa-solid fa-user-shield"></i>
                       </div>
+                      {isSidebarExpanded && (
+                        <div className="min-w-0">
+                          <h4 className="font-extrabold text-xs text-slate-900 truncate">{currentAdmin.nama_lengkap}</h4>
+                          <span className="text-[10px] text-slate-400 font-semibold uppercase">{currentAdmin.role || 'Super Admin'}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Auto-Hide Pin Toggle on Desktop */}
+                    {isSidebarExpanded && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !isSidebarPinned;
+                          setIsSidebarPinned(next);
+                          showToast(next ? 'Navigasi dikunci (Pin)' : 'Auto-hide navigasi aktif (akan mengecil saat mouse keluar)', 'info');
+                        }}
+                        className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs transition-all cursor-pointer ${
+                          isSidebarPinned ? 'bg-brand-50 text-brand-600 font-bold' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-100'
+                        }`}
+                        title={isSidebarPinned ? 'Navigasi Terkunci (Klik untuk aktifkan Auto-Hide)' : 'Auto-Hide Aktif (Klik untuk kunci navigasi)'}
+                      >
+                        <i className={`fa-solid fa-thumbtack ${isSidebarPinned ? 'text-brand-600' : '-rotate-45'}`}></i>
+                      </button>
                     )}
                   </div>
+
+                  {!isSidebarExpanded && (
+                    <div className="hidden md:flex justify-center -mt-1 mb-1">
+                      <span className="text-[9px] font-extrabold text-slate-400 tracking-wider uppercase px-1.5 py-0.5 rounded bg-slate-50 border border-slate-100 text-center" title="Arahkan kursor ke sini untuk membuka menu otomatis">
+                        Auto
+                      </span>
+                    </div>
+                  )}
 
                   <nav className="flex flex-col gap-1 w-full">
                     {[
@@ -2640,13 +2763,19 @@ export default function App() {
                       return (
                         <button
                           key={key}
-                          onClick={() => switchAdminTab(key as any)}
-                          className={`flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer ${
-                            isActive ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-50'
+                          onClick={() => {
+                            switchAdminTab(key as any);
+                            setMobileAdminMenuOpen(false);
+                          }}
+                          title={label}
+                          className={`flex items-center ${
+                            isSidebarExpanded ? 'justify-start gap-3 px-3' : 'justify-center px-0'
+                          } py-2.5 rounded-2xl text-xs font-bold transition-all text-left cursor-pointer group/btn ${
+                            isActive ? 'bg-brand-50 text-brand-700 shadow-2xs' : 'text-slate-600 hover:bg-slate-50'
                           }`}
                         >
-                          <i className={`fa-solid ${icon} w-5 text-center text-sm`}></i>
-                          {!isSidebarCollapsed && <span>{label}</span>}
+                          <i className={`fa-solid ${icon} w-5 text-center text-sm ${isActive ? 'text-brand-600' : 'text-slate-500 group-hover/btn:text-slate-800'}`}></i>
+                          {isSidebarExpanded && <span className="truncate">{label}</span>}
                         </button>
                       );
                     })}
@@ -2654,10 +2783,13 @@ export default function App() {
 
                   <button
                     onClick={logoutAdmin}
-                    className="mt-4 flex items-center gap-3 px-3 py-2.5 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-50 transition-all text-left border-t border-slate-100 pt-3 cursor-pointer"
+                    title="Keluar Admin"
+                    className={`mt-3 flex items-center ${
+                      isSidebarExpanded ? 'justify-start gap-3 px-3' : 'justify-center px-0'
+                    } py-2.5 rounded-2xl text-xs font-bold text-rose-600 hover:bg-rose-50 transition-all text-left border-t border-slate-100 pt-3 cursor-pointer`}
                   >
                     <i className="fa-solid fa-arrow-right-from-bracket w-5 text-center text-sm"></i>
-                    {!isSidebarCollapsed && <span>Keluar Admin</span>}
+                    {isSidebarExpanded && <span>Keluar Admin</span>}
                   </button>
                 </aside>
 
@@ -3670,21 +3802,37 @@ export default function App() {
                   {/* 7. PANEL JATAH LIBUR & CUTI */}
                   {activeAdminTab === 'jatah' && (
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-3">
                         <div>
                           <h3 className="font-extrabold text-base text-slate-900">Jatah Libur & Cuti Karyawan</h3>
-                          <p className="text-xs text-slate-500">Monitoring dan penyesuaian kuota libur / cuti</p>
+                          <p className="text-xs text-slate-500">Default jatah cuti: 0 hari (dapat disesuaikan per karyawan)</p>
                         </div>
-                        <button
-                          onClick={async () => {
-                            await supabaseClient.from('karyawan_presensi').update({ sisa_libur: 4 }).neq('id', '00000000-0000-0000-0000-000000000000');
-                            showToast('Tutup buku berhasil! Seluruh jatah libur karyawan di-reset ke 4 hari.', 'success');
-                            loadAdminKaryawan();
-                          }}
-                          className="px-3.5 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
-                        >
-                          <i className="fa-solid fa-rotate-left"></i> Tutup Buku (Reset Libur 4 Hari)
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={async () => {
+                              await supabaseClient.from('karyawan_presensi').update({ sisa_libur: 4 }).neq('id', '00000000-0000-0000-0000-000000000000');
+                              showToast('Tutup buku berhasil! Seluruh jatah libur karyawan di-reset ke 4 hari.', 'success');
+                              loadAdminKaryawan();
+                            }}
+                            className="px-3.5 py-2 bg-brand-600 hover:bg-brand-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
+                          >
+                            <i className="fa-solid fa-rotate-left"></i> Reset Libur (4 Hari)
+                          </button>
+                          <button
+                            onClick={async () => {
+                              setDeleteConfirmMsg('Reset seluruh kuota cuti karyawan ke default 0 hari?');
+                              setDeleteActionFn(() => async () => {
+                                await supabaseClient.from('karyawan_presensi').update({ sisa_cuti: 0 }).neq('id', '00000000-0000-0000-0000-000000000000');
+                                showToast('Seluruh kuota cuti karyawan berhasil di-reset ke default 0 hari!', 'success');
+                                loadAdminKaryawan();
+                              });
+                              setModalConfirmDeleteOpen(true);
+                            }}
+                            className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-md cursor-pointer"
+                          >
+                            <i className="fa-solid fa-rotate-left"></i> Reset Cuti (0 Hari)
+                          </button>
+                        </div>
                       </div>
 
                       <div className="overflow-x-auto border border-slate-200 rounded-2xl">
@@ -3716,7 +3864,7 @@ export default function App() {
                                   </td>
                                   <td className="p-3 text-slate-500">{k.divisi || 'Umum'}</td>
                                   <td className="p-3 font-extrabold text-sky-700">{k.sisa_libur ?? 4} Hari</td>
-                                  <td className="p-3 font-extrabold text-purple-700">{k.sisa_cuti ?? 12} Hari</td>
+                                  <td className="p-3 font-extrabold text-purple-700">{k.sisa_cuti ?? 0} Hari</td>
                                   <td className="p-3 text-right space-x-1">
                                     <button
                                       onClick={async () => {
@@ -3740,7 +3888,7 @@ export default function App() {
                                     </button>
                                     <button
                                       onClick={async () => {
-                                        const cur = k.sisa_cuti ?? 12;
+                                        const cur = k.sisa_cuti ?? 0;
                                         await supabaseClient.from('karyawan_presensi').update({ sisa_cuti: cur + 1 }).eq('id', k.id);
                                         loadAdminKaryawan();
                                       }}
@@ -3750,7 +3898,7 @@ export default function App() {
                                     </button>
                                     <button
                                       onClick={async () => {
-                                        const cur = k.sisa_cuti ?? 12;
+                                        const cur = k.sisa_cuti ?? 0;
                                         await supabaseClient.from('karyawan_presensi').update({ sisa_cuti: Math.max(0, cur - 1) }).eq('id', k.id);
                                         loadAdminKaryawan();
                                       }}
@@ -4963,6 +5111,8 @@ export default function App() {
                   await supabaseClient.from('karyawan_presensi').update(payload).eq('id', editingKaryawanId);
                 } else {
                   payload.password = karyawanFormPass.trim() || '123456';
+                  payload.sisa_cuti = 0;
+                  payload.sisa_libur = 4;
                   await supabaseClient.from('karyawan_presensi').insert([payload]);
                 }
 
