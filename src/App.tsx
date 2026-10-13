@@ -1266,8 +1266,29 @@ export default function App() {
   };
 
   const loadAdminDivisi = async () => {
-    const { data } = await supabaseClient.from('divisi_presensi').select('*').order('nama_divisi', { ascending: true });
-    setAdminDivisiList(data || []);
+    try {
+      const { data, error } = await supabaseClient.from('divisi_presensi').select('*').order('nama_divisi', { ascending: true });
+      if (!error && data && data.length > 0) {
+        setAdminDivisiList(data);
+        return data;
+      }
+      // Jika tabel divisi kosong, buat divisi default agar selalu ada opsi yang dapat dipilih
+      if (!error && (!data || data.length === 0)) {
+        const defaults = [
+          { nama_divisi: 'Operasional', shifts: ['Pagi', 'Siang'], allow_cuti: true },
+          { nama_divisi: 'Umum', shifts: ['Reguler'], allow_cuti: true },
+          { nama_divisi: 'Keuangan', shifts: ['Reguler'], allow_cuti: true }
+        ];
+        const { data: inserted } = await supabaseClient.from('divisi_presensi').insert(defaults).select();
+        const res = (inserted && inserted.length > 0) ? inserted : defaults.map((d, i) => ({ id: `default-${i}`, ...d }));
+        setAdminDivisiList(res as any);
+        return res as any;
+      }
+      return data || [];
+    } catch (e) {
+      console.warn('Gagal memuat divisi:', e);
+      return [];
+    }
   };
 
   const loadAdminLembur = async () => {
@@ -1287,22 +1308,44 @@ export default function App() {
 
   const switchAdminTab = (tab: typeof activeAdminTab) => {
     setActiveAdminTab(tab);
-    if (tab === 'rekap') loadAdminRekapan();
-    else if (tab === 'karyawan') loadAdminKaryawan();
-    else if (tab === 'lokasi') loadAdminLokasi();
-    else if (tab === 'shift') loadAdminShiftAndJam();
-    else if (tab === 'divisi') loadAdminDivisi();
-    else if (tab === 'lembur') loadAdminLembur();
-    else if (tab === 'jatah') loadAdminKaryawan();
-    else if (tab === 'pengumuman') loadAdminPengumuman();
-    else if (tab === 'useradmin') loadAdminUsers();
+    if (tab === 'rekap') {
+      loadAdminRekapan();
+    } else if (tab === 'karyawan') {
+      loadAdminKaryawan();
+      loadAdminDivisi();
+      loadAdminShiftAndJam();
+    } else if (tab === 'lokasi') {
+      loadAdminLokasi();
+    } else if (tab === 'shift') {
+      loadAdminShiftAndJam();
+    } else if (tab === 'divisi') {
+      loadAdminDivisi();
+      loadAdminShiftAndJam();
+    } else if (tab === 'lembur') {
+      loadAdminLembur();
+    } else if (tab === 'jatah') {
+      loadAdminKaryawan();
+      loadAdminDivisi();
+    } else if (tab === 'pengumuman') {
+      loadAdminPengumuman();
+    } else if (tab === 'useradmin') {
+      loadAdminUsers();
+    }
   };
 
   useEffect(() => {
     if (currentView === 'dashboard' && currentAdmin) {
       loadAdminRekapan();
+      loadAdminDivisi();
+      loadAdminShiftAndJam();
     }
   }, [currentView, currentAdmin, loadAdminRekapan]);
+
+  useEffect(() => {
+    if (modalKaryawanOpen && adminDivisiList.length === 0) {
+      loadAdminDivisi();
+    }
+  }, [modalKaryawanOpen, adminDivisiList.length]);
 
   // Modal Presensi camera and Leaflet map lifecycle
   const stopLiveCamera = () => {
@@ -3277,7 +3320,8 @@ export default function App() {
                             setKaryawanFormWa('');
                             setKaryawanFormEmail('');
                             setKaryawanFormPass('');
-                            setKaryawanFormDivisi(adminDivisiList[0]?.nama_divisi || 'Umum');
+                            const divs = await loadAdminDivisi();
+                            setKaryawanFormDivisi(divs.length > 0 ? divs[0].nama_divisi : 'Umum');
                             setKaryawanFormJalan('');
                             setSelectedProvId('');
                             setSelectedKotaId('');
@@ -3365,7 +3409,7 @@ export default function App() {
                                     <div className="text-[10px] text-slate-400 mt-0.5">{(k.shifts || []).join(', ')}</div>
                                   </td>
                                   <td className="p-3">
-                                    <span className="text-[11px] font-bold text-slate-700">Libur: {k.sisa_libur ?? 4} | Cuti: {k.sisa_cuti ?? 12}</span>
+                                    <span className="text-[11px] font-bold text-slate-700">Libur: {k.sisa_libur ?? 4} | Cuti: {k.sisa_cuti ?? 0}</span>
                                   </td>
                                   <td className="p-3 text-right space-x-1">
                                     <button
@@ -3377,7 +3421,8 @@ export default function App() {
                                         setKaryawanFormWa(k.no_wa);
                                         setKaryawanFormEmail(k.email);
                                         setKaryawanFormPass('');
-                                        setKaryawanFormDivisi(k.divisi || 'Umum');
+                                        const divs = await loadAdminDivisi();
+                                        setKaryawanFormDivisi(k.divisi || (divs.length > 0 ? divs[0].nama_divisi : 'Umum'));
                                         const addr = parseAddressData(k.alamat);
                                         setKaryawanFormJalan(addr.jalan || '');
                                         setModalKaryawanOpen(true);
@@ -5061,8 +5106,20 @@ export default function App() {
             <form
               onSubmit={async e => {
                 e.preventDefault();
+                let connectedShifts = ['Reguler'];
                 const matchedDiv = adminDivisiList.find(d => d.nama_divisi === karyawanFormDivisi);
-                const connectedShifts = matchedDiv?.shifts && matchedDiv.shifts.length > 0 ? matchedDiv.shifts : ['Reguler'];
+                if (matchedDiv?.shifts && matchedDiv.shifts.length > 0) {
+                  connectedShifts = matchedDiv.shifts;
+                } else {
+                  const { data: divDb } = await supabaseClient
+                    .from('divisi_presensi')
+                    .select('shifts')
+                    .eq('nama_divisi', karyawanFormDivisi)
+                    .maybeSingle();
+                  if (divDb?.shifts && divDb.shifts.length > 0) {
+                    connectedShifts = divDb.shifts;
+                  }
+                }
 
                 const selProvObj = provinsiList.find(p => p.id === selectedProvId);
                 const selKotaObj = kotaList.find(k => k.id === selectedKotaId);
@@ -5196,24 +5253,40 @@ export default function App() {
 
               {/* Divisi & Linked shifts */}
               <div className="p-3 bg-brand-50/50 rounded-2xl border border-brand-100 space-y-2">
-                <label className="block text-xs font-bold text-slate-800">Pilih Divisi Karyawan</label>
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold text-slate-800">Pilih Divisi Karyawan</label>
+                  <span className="text-[10px] text-brand-600 font-semibold">
+                    {adminDivisiList.length > 0 ? `${adminDivisiList.length} Divisi Tersedia` : 'Memuat divisi...'}
+                  </span>
+                </div>
                 <select
                   value={karyawanFormDivisi}
                   onChange={e => setKaryawanFormDivisi(e.target.value)}
-                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold"
+                  className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-xs font-semibold focus:outline-none focus:ring-2 focus:ring-brand-500"
                 >
-                  {adminDivisiList.map(d => (
-                    <option key={d.id} value={d.nama_divisi}>{d.nama_divisi}</option>
-                  ))}
+                  {adminDivisiList.length === 0 ? (
+                    <option value={karyawanFormDivisi || 'Umum'}>{karyawanFormDivisi || 'Memuat divisi...'}</option>
+                  ) : (
+                    adminDivisiList.map(d => (
+                      <option key={d.id} value={d.nama_divisi}>{d.nama_divisi}</option>
+                    ))
+                  )}
+                  {karyawanFormDivisi && !adminDivisiList.some(d => d.nama_divisi === karyawanFormDivisi) && (
+                    <option value={karyawanFormDivisi}>{karyawanFormDivisi}</option>
+                  )}
                 </select>
                 <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                   <span className="font-bold text-brand-700">Shift Terhubung:</span>
                   <div className="flex flex-wrap gap-1">
-                    {(adminDivisiList.find(d => d.nama_divisi === karyawanFormDivisi)?.shifts || ['Reguler']).map(s => (
-                      <span key={s} className="px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 text-[11px] font-bold border border-indigo-100 flex items-center gap-1">
-                        <i className="fa-solid fa-clock text-[10px]"></i> {s}
-                      </span>
-                    ))}
+                    {(() => {
+                      const matched = adminDivisiList.find(d => d.nama_divisi === karyawanFormDivisi);
+                      const activeShifts = matched?.shifts && matched.shifts.length > 0 ? matched.shifts : ['Reguler'];
+                      return activeShifts.map(s => (
+                        <span key={s} className="px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-700 text-[11px] font-bold border border-indigo-100 flex items-center gap-1">
+                          <i className="fa-solid fa-clock text-[10px]"></i> {s}
+                        </span>
+                      ));
+                    })()}
                   </div>
                 </div>
               </div>
